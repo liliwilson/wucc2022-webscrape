@@ -2,6 +2,11 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
+import multiprocessing
+import time
+
+EVENT_NAME = 'wu24'
+NUM_GAMES = 212
 
 ############### GET LIST OF TEAMS ###############
 
@@ -14,28 +19,28 @@ def get_teams_from_rows(rows):
     return pd.Series(teams)
 
 def list_of_teams():
-    page_url = 'https://results.wfdf.sport/wucc/?view=teams&season=WUCC2022&list=allteams'
+    page_url = f'https://results.wfdf.sport/{EVENT_NAME}/?view=teams&season=WU24-2023&list=allteams'
     response = requests.get(page_url)
     soup = BeautifulSoup(response.text, 'html.parser')
     tables = soup.find_all('table')
 
-    open_rows = tables[7].find_all('tr')
+    open_rows = tables[8].find_all('tr')
     open_teams = get_teams_from_rows(open_rows)
     
-    womens_rows = tables[8].find_all('tr')
+    womens_rows = tables[9].find_all('tr')
     womens_teams = get_teams_from_rows(womens_rows)
 
-    mixed_rows = tables[9].find_all('tr')
+    mixed_rows = tables[7].find_all('tr')
     mixed_teams = get_teams_from_rows(mixed_rows)
     
     df = pd.concat([open_teams, womens_teams, mixed_teams], axis=1)
     df.columns = ['open teams', 'women\'s teams', 'mixed teams']
-    df.to_csv('team_list.csv')
+    df.to_csv(f'team_list_{EVENT_NAME}.csv')
 
 ############### GET TEAM TOTAL GOALS ###############
 
 def get_team_total(team_num):
-    page_url = f'https://results.wfdf.sport/wucc/?view=teamcard&team={team_num}'
+    page_url = f'https://results.wfdf.sport/{EVENT_NAME}/?view=teamcard&team={team_num}'
     response = requests.get(page_url)
     soup = BeautifulSoup(response.text, 'html.parser')
     table = soup.find_all('table')[7]
@@ -53,14 +58,14 @@ def get_team_total(team_num):
 def get_all_team_totals():
     master_dict = dict()
 
-    for i in range(1, 130):
-        print(f'getting goals {i} of 129')
+    for i in range(1, 46):
+        print(f'getting goals {i} of 45')
         name, goals = get_team_total(i)
         master_dict[name] = goals
 
     df = pd.DataFrame(list(zip(master_dict.keys(), master_dict.values())))
     df.columns = ['team', 'total goals']
-    df.to_csv('team_goals.csv')
+    df.to_csv(f'team_goals_{EVENT_NAME}.csv')
 
 ############### GET TEAM GIVEN PEOPLE ###############
 
@@ -118,12 +123,29 @@ def get_pairings(page_url):
 
 ############### GET CSV OF POWER DUOS ###############
 
+def generate_duos_for_game(game_id):
+    master_dict = dict()
+    print(f'working on {game_id} out of {NUM_GAMES}...')
+    page_url = f'https://results.wfdf.sport/{EVENT_NAME}/?view=gameplay&game={game_id}'
+    try:
+        pairings = get_pairings(page_url)
+    except:
+        pairings = []
+    
+    if len(pairings) == 0:
+        print(f"game {game_id} failed")
+    else:
+        for pairing in pairings:
+            master_dict[pairing] = master_dict.get(pairing, 0) + 1
+
+        return pd.Series(master_dict).reset_index()  
+
 def generate_duos_csv():
     master_dict = dict()
     failed_games = []
-    for i in range(1,653):
-        print(f'working on {i} out of 652...')
-        page_url = f'https://results.wfdf.sport/wucc/?view=gameplay&game={i}'
+    for i in range(1,NUM_GAMES + 1):
+        print(f'working on {i} out of {NUM_GAMES}...')
+        page_url = f'https://results.wfdf.sport/{EVENT_NAME}/?view=gameplay&game={i}'
         try:
             pairings = get_pairings(page_url)
         except:
@@ -139,10 +161,39 @@ def generate_duos_csv():
     df.columns = ['person 1', 'person 2', 'team', '# connections']
     df = df.sort_values(by='# connections', ascending=False)
 
-    df.to_csv('wucc_duos.csv')
+    df.to_csv(f'{EVENT_NAME}_duos.csv')
     print(failed_games)
+
+def generate_duos_csv_parallel():
+    pool = multiprocessing.Pool()
+    result_async = [pool.apply_async(generate_duos_for_game, args = (i, )) for i in
+                    range(1,NUM_GAMES + 1)]
+    results = [r.get() for r in result_async]
+    df = pd.concat(results, axis=0).reset_index()   
+    df.columns = ['index', 'person 1', 'person 2', 'team', '# connections']
+    df = df.groupby(['person 1', 'person 2', 'team']).sum().reset_index() # merge things
+    df = df.sort_values(by='# connections', ascending=False)
+    df.to_csv(f'{EVENT_NAME}_duos_parallel.csv')
+    return df
 
 ############### MAIN ###############
 
 if __name__ == '__main__':
-    generate_duos_csv()
+    begin_parallel = time.perf_counter()
+    generate_duos_csv_parallel()
+    end_parallel = time.perf_counter()
+    # print(f"done with parallel!! time: {end_parallel - begin_parallel}")
+
+    # begin_serial = time.perf_counter()
+    # generate_duos_csv()
+    # end_serial = time.perf_counter()
+    # print(f"done with serial!! time: {end_serial - begin_serial}")
+
+    # print('\n\nsummary:')
+    # print(f'parallel time: {end_parallel - begin_parallel}')
+    # print(f"serial time: {end_serial - begin_serial}")
+
+# todo do a more legit timing thing later just for funsies
+# on bad amtrak wifi:
+# parallel time: 49.513219
+# serial time: 671.389619291
